@@ -2,10 +2,10 @@ import { schnorr } from "@noble/curves/secp256k1";
 
 // Relay info (NIP-11)
 const relayInfo = {
-  name: self['RELAYINFO_NAME'] || "Nosflare",
-  description: self['RELAYINFO_DESC'] || "A serverless Nostr relay through Cloudflare Worker and KV store",
-  pubkey: self['RELAYINFO_PUBKEY'] || "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
-  contact: self['RELAYINFO_CONTACT'] || "lucas@censorship.rip",
+  name: "Nosflare",
+  description: "A serverless Nostr relay through Cloudflare Worker and KV store",
+  pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
+  contact: "lucas@censorship.rip",
   supported_nips: [1, 2, 4, 9, 11, 12, 15, 16, 20, 22, 33, 40],
   software: "https://github.com/Spl0itable/nosflare",
   version: "1.9.7",
@@ -16,17 +16,15 @@ const relayIcon = "https://workers.cloudflare.com/resources/logo/logo.svg";
 
 // Blocked pubkeys
 // Add pubkeys in hex format as strings to block write access
-const blockedPubkeys = [
-  ...(self['BLOCKEDPUBKEYS'] || '').split(','),
+let blockedPubkeys = [
   "3c7f5948b5d80900046a67d8e3bf4971d6cba013abece1dd542eca223cf3dd3f",
   "fed5c0c3c8fe8f51629a0b39951acdf040fd40f53a327ae79ee69991176ba058",
   "e810fafa1e89cdf80cced8e013938e87e21b699b24c8570537be92aec4b12c18"
 ];
 // Allowed pubkeys
 // Add pubkeys in hex format as strings to allow write access
-const allowedPubkeys = [
+let allowedPubkeys = [
   // ... pubkeys that are explicitly allowed
-  ...(self['ALLOWEDPUBKEYS'] || '').split(','),
 ];
 function isPubkeyAllowed(pubkey) {
   if (allowedPubkeys.length > 0 && !allowedPubkeys.includes(pubkey)) {
@@ -82,36 +80,64 @@ const D1 = {
   }
 }
 
+export interface Env {
+  // If you set another name in wrangler.toml as the value for 'binding',
+  // replace "DB" with the variable name you defined.
+  relay: D1Database;
+}
+
+export default {
+  fetch(request, env, ctx) {
+
+    allowedPubkeys = allowedPubkeys.concat((env['ALLOWEDPUBKEYS'] || '').split(','));
+    blockedPubkeys = blockedPubkeys.concat((env['BLOCKEDPUBKEYS'] || '').split(','));
+
+    return handler(request, env, ctx);
+  },
+};
+
+async function handler(request, env, ctx) {
+  request.env = env;
+  request.ctx = ctx;
+  const url = new URL(request.url);
+  if (url.pathname === "/") {
+    if (request.headers.get("Upgrade") === "websocket") {
+      return handleWebSocket(request);
+    } else if (request.headers.get("Accept") === "application/nostr+json") {
+      return handleRelayInfoRequest(env);
+    } else {
+      return new Response("Connect using a Nostr client", { status: 200 });
+    }
+  } else if (url.pathname === "/favicon.ico") {
+    return serveFavicon(event);
+  } else {
+    return new Response("Invalid request", { status: 400 });
+  }
+}
+
 addEventListener('scheduled', event => {
   event.waitUntil(cleanUpExpiredCacheEntries());
 });
 addEventListener("fetch", (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
-  if (url.pathname === "/") {
-    if (request.headers.get("Upgrade") === "websocket") {
-      event.respondWith(handleWebSocket(request));
-    } else if (request.headers.get("Accept") === "application/nostr+json") {
-      event.respondWith(handleRelayInfoRequest());
-    } else {
-      event.respondWith(
-        new Response("Connect using a Nostr client", { status: 200 })
-      );
-    }
-  } else if (url.pathname === "/favicon.ico") {
-    event.respondWith(serveFavicon(event));
-  } else {
-    event.respondWith(new Response("Invalid request", { status: 400 }));
-  }
+  event.respondWith(handler(event.request))
 });
-async function handleRelayInfoRequest() {
+async function handleRelayInfoRequest(env) {
   const headers = new Headers({
     "Content-Type": "application/nostr+json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
     "Access-Control-Allow-Methods": "GET",
   });
-  return new Response(JSON.stringify(relayInfo), { status: 200, headers: headers });
+
+  const info = {
+    ...relayInfo,
+    name: env['RELAYINFO_NAME'] || relayInfo.name,
+    description: env['RELAYINFO_DESC'] || relayInfo.description,
+    pubkey: env['RELAYINFO_PUBKEY'] || relayInfo.pubkey,
+    contact: env['RELAYINFO_CONTACT'] || relayInfo.contact,
+  };
+
+  return new Response(JSON.stringify(info), { status: 200, headers: headers });
 }
 async function serveFavicon() {
   const response = await fetch(relayIcon);
@@ -291,7 +317,7 @@ async function processEvent(event, server) {
       return;
     }
     // Event not found in cache, retrieve from KV store
-    const existingEvent = await relayDb.get(cacheKey, "json");
+    const existingEvent = null;//await relayDb.get(cacheKey, "json");
     if (existingEvent) {
       // Event already exists, update cache and return
       relayCache.set(cacheKey, existingEvent);
@@ -301,7 +327,7 @@ async function processEvent(event, server) {
     const isValidSignature = await verifyEventSignature(event);
     if (isValidSignature) {
       // Store the event in KV store and cache
-      await relayDb.put(cacheKey, JSON.stringify(event));
+      // await relayDb.put(cacheKey, JSON.stringify(event));
       await D1.put(cacheKey, JSON.stringify(event));
 
       relayCache.set(cacheKey, event);
